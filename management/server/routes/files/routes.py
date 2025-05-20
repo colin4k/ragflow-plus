@@ -17,13 +17,19 @@ def allowed_file(filename):
 @files_bp.route("/upload", methods=["POST"])
 def upload_file():
     if "files" not in request.files:
+        current_app.logger.error("未选择文件")
         return jsonify({"code": 400, "message": "未选择文件", "data": None}), 400
 
     files = request.files.getlist("files")
-    upload_result = upload_files_to_server(files)
-
-    # 返回标准格式
-    return jsonify({"code": 0, "message": "上传成功", "data": upload_result["data"]})
+    current_app.logger.info(f"接收到上传请求，文件数量: {len(files)}")
+    
+    try:
+        upload_result = upload_files_to_server(files)
+        current_app.logger.info(f"上传结果: {upload_result}")
+        return jsonify({"code": 0, "message": "上传成功", "data": upload_result["data"]})
+    except Exception as e:
+        current_app.logger.error(f"上传文件失败: {str(e)}")
+        return jsonify({"code": 500, "message": f"上传文件失败: {str(e)}", "data": None}), 500
 
 
 @files_bp.route("", methods=["GET", "OPTIONS"])

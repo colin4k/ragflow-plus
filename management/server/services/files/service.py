@@ -2,11 +2,19 @@ import os
 import mysql.connector
 import re
 import tempfile
+import logging
 from minio import Minio
 from dotenv import load_dotenv
 from datetime import datetime
 from .utils import FileType, FileSource, get_uuid
 from database import DB_CONFIG, MINIO_CONFIG
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # 加载环境变量
 load_dotenv("../../docker/.env")
@@ -45,8 +53,21 @@ def filename_type(filename):
 
 def get_minio_client():
     """创建MinIO客户端"""
-    return Minio(endpoint=MINIO_CONFIG["endpoint"], access_key=MINIO_CONFIG["access_key"], secret_key=MINIO_CONFIG["secret_key"], secure=MINIO_CONFIG["secure"])
-
+    #return Minio(endpoint=MINIO_CONFIG["endpoint"], access_key=MINIO_CONFIG["access_key"], secret_key=MINIO_CONFIG["secret_key"], secure=MINIO_CONFIG["secure"])
+    """获取MinIO客户端连接"""
+    try:
+        minio_client = Minio(
+            MINIO_CONFIG["endpoint"],
+            access_key=MINIO_CONFIG["access_key"],
+            secret_key=MINIO_CONFIG["secret_key"],
+            secure=MINIO_CONFIG["secure"]
+        )
+        # 测试连接
+        minio_client.list_buckets()
+        return minio_client
+    except Exception as e:
+        print(f"MinIO连接失败: {str(e)}")
+        raise
 
 def get_db_connection():
     """创建数据库连接"""
@@ -451,8 +472,11 @@ def batch_delete_files(file_ids):
 
 def upload_files_to_server(files, parent_id=None, user_id=None):
     """处理文件上传到服务器的核心逻辑"""
+    logger.info(f"开始处理文件上传，文件数量: {len(files)}")
+    
     if user_id is None:
         try:
+            logger.info("未提供user_id，尝试获取最早创建的用户ID")
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
 
@@ -467,20 +491,21 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
 
             if earliest_user:
                 user_id = earliest_user["id"]
-                print(f"使用创建时间最早的用户ID: {user_id}")
+                logger.info(f"使用创建时间最早的用户ID: {user_id}")
             else:
                 user_id = "system"
-                print("未找到用户, 使用默认用户ID: system")
+                logger.warning("未找到用户, 使用默认用户ID: system")
 
             cursor.close()
             conn.close()
         except Exception as e:
-            print(f"查询最早用户ID失败: {str(e)}")
+            logger.error(f"查询最早用户ID失败: {str(e)}")
             user_id = "system"
 
     # 如果没有指定parent_id，则获取file表中的第一个记录作为parent_id
     if parent_id is None:
         try:
+            logger.info("未提供parent_id，尝试获取file表中的第一个记录")
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
 
@@ -494,27 +519,30 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
 
             if first_file:
                 parent_id = first_file["id"]
-                print(f"使用file表中的第一个记录ID作为parent_id: {parent_id}")
+                logger.info(f"使用file表中的第一个记录ID作为parent_id: {parent_id}")
             else:
                 # 如果没有找到记录，创建一个新的ID
                 parent_id = get_uuid()
-                print(f"file表中没有记录，创建新的parent_id: {parent_id}")
+                logger.info(f"file表中没有记录，创建新的parent_id: {parent_id}")
 
             cursor.close()
             conn.close()
         except Exception as e:
-            print(f"查询file表第一个记录失败: {str(e)}")
+            logger.error(f"查询file表第一个记录失败: {str(e)}")
             parent_id = get_uuid()  # 如果无法获取，生成一个新的ID
-            print(f"生成新的parent_id: {parent_id}")
+            logger.info(f"生成新的parent_id: {parent_id}")
 
     results = []
 
     for file in files:
         if file.filename == "":
+            logger.warning("跳过空文件名")
             continue
 
         if file and allowed_file(file.filename):
             original_filename = file.filename
+            logger.info(f"开始处理文件: {original_filename}")
+            
             # 修复文件名处理逻辑，保留中文字符
             name, ext = os.path.splitext(original_filename)
 
@@ -524,34 +552,38 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
             # 如果处理后文件名为空，则使用随机字符串
             if not safe_name or safe_name.strip() == "":
                 safe_name = f"file_{get_uuid()[:8]}"
+                logger.warning(f"文件名处理后为空，使用随机名称: {safe_name}")
 
             filename = safe_name + ext.lower()
             filepath = os.path.join(UPLOAD_FOLDER, filename)
 
             try:
                 # 1. 保存文件到本地临时目录
+                logger.info(f"保存文件到临时目录: {filepath}")
                 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
                 file.save(filepath)
-                print(f"文件已保存到临时目录: {filepath}")
 
                 # 2. 获取文件类型
                 filetype = filename_type(filename)
+                logger.info(f"文件类型: {filetype}")
                 if filetype == FileType.OTHER.value:
                     raise RuntimeError("不支持的文件类型")
 
                 # 3. 生成唯一存储位置
                 minio_client = get_minio_client()
                 location = filename
+                logger.info(f"文件存储位置: {location}")
 
                 # 确保bucket存在
                 if not minio_client.bucket_exists(parent_id):
+                    logger.info(f"创建MinIO存储桶: {parent_id}")
                     minio_client.make_bucket(parent_id)
-                    print(f"创建MinIO存储桶: {parent_id}")
 
                 # 4. 上传到MinIO
+                logger.info(f"开始上传文件到MinIO: {parent_id}/{location}")
                 with open(filepath, "rb") as file_data:
                     minio_client.put_object(bucket_name=parent_id, object_name=location, data=file_data, length=os.path.getsize(filepath))
-                print(f"文件已上传到MinIO: {parent_id}/{location}")
+                logger.info(f"文件上传到MinIO成功: {parent_id}/{location}")
 
                 # 5. 创建文件记录
                 file_id = get_uuid()
@@ -575,6 +607,7 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
                 }
 
                 # 保存文件记录
+                logger.info(f"开始保存文件记录到数据库: {file_id}")
                 conn = get_db_connection()
                 try:
                     cursor = conn.cursor()
@@ -586,25 +619,30 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
                     cursor.execute(query, list(file_record.values()))
 
                     conn.commit()
+                    logger.info(f"文件记录保存成功: {file_id}")
 
                     results.append({"id": file_id, "name": filename, "size": file_record["size"], "type": filetype, "status": "success"})
 
                 except Exception as e:
                     conn.rollback()
-                    print(f"数据库操作失败: {str(e)}")
+                    logger.error(f"数据库操作失败: {str(e)}")
                     raise
                 finally:
                     cursor.close()
                     conn.close()
 
             except Exception as e:
+                logger.error(f"文件上传过程中出错: {filename}, 错误: {str(e)}")
                 results.append({"name": filename, "error": str(e), "status": "failed"})
-                print(f"文件上传过程中出错: {filename}, 错误: {str(e)}")
             finally:
                 # 删除临时文件
                 if os.path.exists(filepath):
+                    logger.info(f"删除临时文件: {filepath}")
                     os.remove(filepath)
         else:
+            logger.error(f"不支持的文件类型: {file.filename}")
             raise RuntimeError({"name": filename, "error": "不支持的文件类型", "status": "failed"})
 
-    return {"code": 0, "data": results, "message": f"成功上传 {len([r for r in results if r['status'] == 'success'])}/{len(files)} 个文件"}
+    success_count = len([r for r in results if r['status'] == 'success'])
+    logger.info(f"文件上传完成，成功: {success_count}/{len(files)}")
+    return {"code": 0, "data": results, "message": f"成功上传 {success_count}/{len(files)} 个文件"}
