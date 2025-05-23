@@ -1199,6 +1199,124 @@ function shouldShowProgressCount(status: string) {
 // 用户列表相关状态
 const userList = ref<{ id: number, username: string }[]>([])
 const userLoading = ref(false)
+
+// 格式化解析状态
+function formatParseStatus(progress: number) {
+  if (progress === 0) return "未解析"
+  if (progress === 1) return "已完成"
+  return `解析中 ${Math.floor(progress * 100)}%`
+}
+
+// 获取解析状态对应的标签类型
+function getParseStatusType(progress: number) {
+  if (progress === 0) return "info"
+  if (progress === 1) return "success"
+  return "warning"
+}
+
+// handleParseDocument 方法
+function handleParseDocument(row: any) {
+  // 先判断是否已完成解析
+  if (row.progress === 1) {
+    ElMessage.warning("文档已完成解析，无需再重复解析")
+    return
+  }
+
+  ElMessageBox.confirm(
+    `确定要解析文档 "${row.name}" 吗？`,
+    "解析确认",
+    {
+      confirmButtonText: "确定",
+      cancelButtonText: "取消",
+      type: "info"
+    }
+  ).then(() => {
+    runDocumentParseApi(row.id)
+      .then(() => {
+        ElMessage.success("解析任务已提交")
+        // 设置当前文档ID并显示解析进度对话框
+        currentDocId.value = row.id
+        showParseProgress.value = true
+        // 刷新文档列表
+        getDocumentList()
+      })
+      .catch((error) => {
+        ElMessage.error(`解析任务提交失败: ${error?.message || "未知错误"}`)
+      })
+  }).catch(() => {
+    // 用户取消操作
+  })
+}
+
+// 处理批量文档解析
+function handleBatchParse() {
+  if (!currentKnowledgeBase.value) return
+
+  const kbId = currentKnowledgeBase.value.id
+  const kbName = currentKnowledgeBase.value.name
+
+  // 先检查是否有正在进行的任务
+  getSequentialBatchParseProgressApi(kbId).then(res => {
+    if (res.code === 0 && res.data && (res.data.status === "running" || res.data.status === "starting")) {
+      // 如果已经有任务在进行，显示确认对话框
+      ElMessageBox.confirm(
+        `知识库 "${kbName}" 已有批量解析任务正在进行中，是否查看进度？`,
+        "任务已存在",
+        {
+          confirmButtonText: "查看进度",
+          cancelButtonText: "取消",
+          type: "info"
+        }
+      ).then(() => {
+        // 用户选择查看进度
+        batchProgress.value = res.data
+        startBatchPolling()
+      }).catch(() => {
+        // 用户取消操作
+      })
+    } else {
+      // 没有正在进行的任务，显示启动确认对话框
+      ElMessageBox.confirm(
+        `确定要为知识库 "${kbName}" 启动后台批量解析吗？<br><strong style="color: #E6A23C;">该过程将在后台运行，您可以稍后查看结果或关闭此窗口。</strong>`,
+        "启动批量解析确认",
+        {
+          confirmButtonText: "确定启动",
+          cancelButtonText: "取消",
+          type: "warning",
+          dangerouslyUseHTMLString: true
+        }
+      ).then(async () => {
+        batchParsingLoading.value = true
+        batchProgress.value = null
+        try {
+          const res = await startSequentialBatchParseAsyncApi(kbId)
+
+          if (res.code === 0 && res.data) {
+            ElMessage.success(res.data.message || `已成功启动批量解析任务`)
+            startBatchPolling()
+            setTimeout(getDocumentList, 1500)
+          } else {
+            const errorMsg = res.data?.message || res.message || "启动批量解析任务失败"
+            ElMessage.error(errorMsg)
+            batchParsingLoading.value = false
+          }
+        } catch (error: any) {
+          ElMessage.error(`启动批量解析任务时出错: ${error?.message || "网络错误"}`)
+          console.error("启动批量解析任务失败:", error)
+          batchParsingLoading.value = false
+        } finally {
+          if (!isBatchPolling.value) {
+            batchParsingLoading.value = false
+          }
+        }
+      }).catch(() => {
+        ElMessage.info("已取消批量解析操作")
+      })
+    }
+  }).catch(error => {
+    ElMessage.error(`检查任务状态失败: ${error?.message || "未知错误"}`)
+  })
+}
 </script>
 
 <template>
