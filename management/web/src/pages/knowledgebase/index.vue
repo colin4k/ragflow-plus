@@ -752,31 +752,48 @@ function getFileIconInDialog(file: any) {
 // 获取文件夹下所有文件的ID（递归）
 async function getFolderAllFileIds(folderId: string): Promise<string[]> {
   try {
-    const response = await getFileListApi({
-      currentPage: 1,
-      size: 1000, // 获取大量数据
-      name: "",
-      sort_by: "name",
-      sort_order: "asc",
-      parent_id: folderId
-    })
-    
-    const typedResponse = response as ApiResponse<FileListResponse>
-    const items = typedResponse.data.list
-    let fileIds: string[] = []
-    
-    for (const item of items) {
-      if (item.type === 'folder') {
-        // 递归获取子文件夹的文件
-        const subFileIds = await getFolderAllFileIds(item.id)
-        fileIds = fileIds.concat(subFileIds)
-      } else {
-        // 添加文件ID
-        fileIds.push(item.id)
+    let allFileIds: string[] = []
+    let currentPage = 1
+    const pageSize = 1000 // 每页获取1000个文件
+    let hasMore = true
+
+    // 循环获取所有页的文件
+    while (hasMore) {
+      const response = await getFileListApi({
+        currentPage,
+        size: pageSize,
+        name: "",
+        sort_by: "name",
+        sort_order: "asc",
+        parent_id: folderId
+      })
+      
+      const typedResponse = response as ApiResponse<FileListResponse>
+      const items = typedResponse.data.list
+      
+      // 处理当前页的文件和文件夹
+      for (const item of items) {
+        if (item.type === 'folder') {
+          // 递归获取子文件夹的文件
+          const subFileIds = await getFolderAllFileIds(item.id)
+          allFileIds = allFileIds.concat(subFileIds)
+        } else {
+          // 添加文件ID
+          allFileIds.push(item.id)
+        }
+      }
+      
+      // 检查是否还有更多文件
+      hasMore = items.length === pageSize
+      currentPage++
+      
+      // 显示进度信息
+      if (currentPage % 5 === 0) { // 每5页显示一次进度
+        ElMessage.info(`正在扫描文件夹，已找到 ${allFileIds.length} 个文件...`)
       }
     }
     
-    return fileIds
+    return allFileIds
   } catch (error) {
     console.error(`获取文件夹 ${folderId} 下的文件失败:`, error)
     return []
