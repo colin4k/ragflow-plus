@@ -21,6 +21,9 @@ const { paginationData, handleCurrentChange, handleSizeChange } = usePagination(
 const uploadDialogVisible = ref(false)
 const uploadFileList = ref<UploadUserFile[]>([])
 const uploadLoading = ref(false)
+const uploadProgress = ref(0)
+const currentUploadingFile = ref("")
+const uploadStatus = ref("")
 
 // 创建文件夹相关
 const createFolderDialogVisible = ref(false)
@@ -286,31 +289,64 @@ function handleUpload() {
 }
 
 async function submitUpload() {
-  uploadLoading.value = true
-  try {
-    const formData = new FormData()
-    uploadFileList.value.forEach((file) => {
-      if (file.raw) {
-        formData.append("files", file.raw)
-      }
-    })
+  if (uploadFileList.value.length === 0) {
+    ElMessage.warning("请选择要上传的文件")
+    return
+  }
 
-    // 使用选择的上传目录，如果没有选择则使用当前目录
-    const targetFolderId = selectedFolderId.value || currentFolderId.value || undefined
-    
-    await uploadFileApi(formData, targetFolderId)
-    ElMessage.success("文件上传成功")
-    getTableData()
-    uploadDialogVisible.value = false
-    uploadFileList.value = []
-  } catch (error: unknown) {
-    let errorMessage = "上传失败"
-    if (error instanceof Error) {
-      errorMessage += `: ${error.message}`
+  uploadLoading.value = true
+  uploadProgress.value = 0
+  uploadStatus.value = "准备上传..."
+  
+  const totalFiles = uploadFileList.value.length
+  let successCount = 0
+  let failCount = 0
+
+  try {
+    for (let i = 0; i < uploadFileList.value.length; i++) {
+      const file = uploadFileList.value[i]
+      if (!file.raw) continue
+
+      currentUploadingFile.value = file.name
+      uploadStatus.value = `正在上传 ${i + 1}/${totalFiles}: ${file.name}`
+      uploadProgress.value = Math.round((i / totalFiles) * 100)
+
+      const formData = new FormData()
+      formData.append("files", file.raw)
+
+      // 使用选择的上传目录，如果没有选择则使用当前目录
+      const targetFolderId = selectedFolderId.value || currentFolderId.value || undefined
+      if (targetFolderId) {
+        formData.append("parent_id", targetFolderId)
+      }
+
+      try {
+        await uploadFileApi(formData, targetFolderId)
+        successCount++
+      } catch (error) {
+        console.error(`文件 ${file.name} 上传失败:`, error)
+        failCount++
+        ElMessage.error(`文件 ${file.name} 上传失败: ${error instanceof Error ? error.message : "未知错误"}`)
+      }
     }
-    ElMessage.error(errorMessage)
+
+    // 更新最终进度
+    uploadProgress.value = 100
+    uploadStatus.value = `上传完成 (成功: ${successCount}, 失败: ${failCount})`
+
+    if (successCount > 0) {
+      ElMessage.success(`成功上传 ${successCount} 个文件${failCount > 0 ? `，${failCount} 个文件上传失败` : ""}`)
+      getTableData()
+      uploadDialogVisible.value = false
+      uploadFileList.value = []
+    } else {
+      ElMessage.error("所有文件上传失败")
+    }
+  } catch (error) {
+    ElMessage.error(`上传过程中发生错误: ${error instanceof Error ? error.message : "未知错误"}`)
   } finally {
     uploadLoading.value = false
+    currentUploadingFile.value = ""
   }
 }
 
@@ -740,6 +776,21 @@ onActivated(() => {
             拖拽文件到此处或<em>点击上传</em>
           </div>
         </el-upload>
+
+        <!-- 上传进度显示 -->
+        <div v-if="uploadLoading" class="upload-progress">
+          <el-progress 
+            :percentage="uploadProgress" 
+            :status="uploadProgress === 100 ? 'success' : ''"
+          />
+          <div class="upload-status">
+            <p>{{ uploadStatus }}</p>
+            <p v-if="currentUploadingFile" class="current-file">
+              当前文件: {{ currentUploadingFile }}
+            </p>
+          </div>
+        </div>
+
         <template #footer>
           <el-button @click="uploadDialogVisible = false">
             取消
@@ -948,6 +999,26 @@ onActivated(() => {
 .folder-label {
   font-weight: 600;
   white-space: nowrap;
+}
+
+.upload-progress {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+}
+
+.upload-status {
+  margin-top: 10px;
+  text-align: center;
+  color: #606266;
+  font-size: 14px;
+}
+
+.current-file {
+  margin-top: 5px;
+  color: #409eff;
+  font-weight: 500;
 }
 </style>
 
