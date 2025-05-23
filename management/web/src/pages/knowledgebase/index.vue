@@ -832,7 +832,10 @@ async function confirmAddDocument() {
     return
   }
 
-  if (!currentKnowledgeBase.value) return
+  if (!currentKnowledgeBase.value) {
+    ElMessage.error("知识库信息不存在")
+    return
+  }
 
   try {
     // 设置请求锁
@@ -888,6 +891,11 @@ async function confirmAddDocument() {
             
             try {
               ElMessage.info(`正在处理第 ${currentBatch}/${totalBatches} 批文件...`)
+              
+              // 确保 currentKnowledgeBase.value 不为 null
+              if (!currentKnowledgeBase.value) {
+                throw new Error("知识库信息不存在")
+              }
               
               const response = await axios.post(
                 `/api/v1/knowledgebases/${currentKnowledgeBase.value.id}/documents`,
