@@ -377,109 +377,34 @@ function handleView(row: KnowledgeBaseData) {
   batchProgress.value = null
   // 获取文档列表
   getDocumentList()
+  
+  // 检查是否有正在进行的批量解析任务
+  checkBatchParseStatus()
 }
 
-// 格式化解析状态
-function formatParseStatus(progress: number) {
-  if (progress === 0) return "未解析"
-  if (progress === 1) return "已完成"
-  return `解析中 ${Math.floor(progress * 100)}%`
-}
-
-// 获取解析状态对应的标签类型
-function getParseStatusType(progress: number) {
-  if (progress === 0) return "info"
-  if (progress === 1) return "success"
-  return "warning"
-}
-
-// handleParseDocument 方法
-function handleParseDocument(row: any) {
-  // 先判断是否已完成解析
-  if (row.progress === 1) {
-    ElMessage.warning("文档已完成解析，无需再重复解析")
-    return
-  }
-
-  ElMessageBox.confirm(
-    `确定要解析文档 "${row.name}" 吗？`,
-    "解析确认",
-    {
-      confirmButtonText: "确定",
-      cancelButtonText: "取消",
-      type: "info"
-    }
-  ).then(() => {
-    runDocumentParseApi(row.id)
-      .then(() => {
-        ElMessage.success("解析任务已提交")
-        // 设置当前文档ID并显示解析进度对话框
-        currentDocId.value = row.id
-        showParseProgress.value = true
-        // 刷新文档列表
-        getDocumentList()
-      })
-      .catch((error) => {
-        ElMessage.error(`解析任务提交失败: ${error?.message || "未知错误"}`)
-      })
-  }).catch(() => {
-    // 用户取消操作
-  })
-}
-
-// 处理批量文档解析 (调用同步 API)
-function handleBatchParse() {
+// 添加检查批量解析状态的方法
+async function checkBatchParseStatus() {
   if (!currentKnowledgeBase.value) return
-
-  const kbId = currentKnowledgeBase.value.id
-  const kbName = currentKnowledgeBase.value.name
-
-  ElMessageBox.confirm(
-    `确定要为知识库 "${kbName}" 启动后台批量解析吗？<br><strong style="color: #E6A23C;">该过程将在后台运行，您可以稍后查看结果或关闭此窗口。</strong>`,
-    "启动批量解析确认",
-    {
-      confirmButtonText: "确定启动",
-      cancelButtonText: "取消",
-      type: "warning",
-      dangerouslyUseHTMLString: true // 允许使用 HTML 标签
-    }
-  ).then(async () => {
-    batchParsingLoading.value = true // 标记"正在启动"状态
-    batchProgress.value = null
-    try {
-      const res = await startSequentialBatchParseAsyncApi(kbId)
-
-      if (res.code === 0 && res.data) {
-        // 后端成功接收了启动请求
-        ElMessage.success(res.data.message || `已成功启动批量解析任务`)
-        // --- 关键：启动轮询来监控进度 ---
+  
+  try {
+    const res = await getSequentialBatchParseProgressApi(currentKnowledgeBase.value.id)
+    
+    if (res.code === 0 && res.data) {
+      // 如果有正在进行的任务，显示进度并开始轮询
+      if (res.data.status === "running" || res.data.status === "starting") {
+        batchProgress.value = res.data
         startBatchPolling()
-        // 可以在启动后稍微延迟一下再刷新列表，尝试显示"解析中"的状态
-        setTimeout(getDocumentList, 1500)
-      } else {
-        // 启动 API 本身调用失败，或后端返回了错误
-        const errorMsg = res.data?.message || res.message || "启动批量解析任务失败"
-        ElMessage.error(errorMsg)
-        batchParsingLoading.value = false // 启动失败，取消"正在启动"状态
-      }
-    } catch (error: any) {
-      // 请求启动 API 时发生网络错误或其他异常
-      ElMessage.error(`启动批量解析任务时出错: ${error?.message || "网络错误"}`)
-      console.error("启动批量解析任务失败:", error)
-      batchParsingLoading.value = false // 启动异常，取消"正在启动"状态
-    } finally {
-      // 只有在 *没有* 成功启动轮询的情况下，才将 batchParsingLoading 设置为 false
-      // 如果轮询已开始，则由 isBatchPolling 状态控制按钮和界面的显示
-      if (!isBatchPolling.value) {
-        batchParsingLoading.value = false
+      } else if (res.data.status === "completed" || res.data.status === "failed") {
+        // 如果任务已完成或失败，只显示最后一次的状态
+        batchProgress.value = res.data
       }
     }
-  }).catch(() => {
-    // 用户点击了"取消"按钮
-    ElMessage.info("已取消批量解析操作")
-  })
+  } catch (error) {
+    console.error("检查批量解析状态失败:", error)
+  }
 }
-// 开始轮询批量任务进度
+
+// 修改 startBatchPolling 方法
 function startBatchPolling() {
   // 如果已经在轮询或者没有当前知识库，则不执行
   if (isBatchPolling.value || !currentKnowledgeBase.value) return
@@ -487,7 +412,9 @@ function startBatchPolling() {
   console.log("开始轮询知识库的批量解析进度:", currentKnowledgeBase.value.id)
   isBatchPolling.value = true
   // 设置一个初始状态，给用户即时反馈
-  batchProgress.value = { status: "running", message: "正在启动批量解析任务...", total: 0, current: 0 }
+  if (!batchProgress.value) {
+    batchProgress.value = { status: "running", message: "正在启动批量解析任务...", total: 0, current: 0 }
+  }
 
   // 以防万一，先清除可能存在的旧定时器
   if (batchPollingInterval.value) {
