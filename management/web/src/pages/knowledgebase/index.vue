@@ -1268,9 +1268,11 @@ function handleBatchParse() {
           type: "info"
         }
       ).then(() => {
-        // 用户选择查看进度
-        batchProgress.value = res.data
-        startBatchPolling()
+        // 用户选择查看进度，确保 res.data 存在
+        if (res.data) {
+          batchProgress.value = res.data
+          startBatchPolling()
+        }
       }).catch(() => {
         // 用户取消操作
       })
