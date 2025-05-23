@@ -816,6 +816,9 @@ function handleFileSelectionChange(selection: any[]) {
 const isAddingDocument = ref(false)
 const messageShown = ref(false) // 添加这一行，将 messageShown 提升为组件级别的变量
 
+// 添加一个常量定义批次大小
+const BATCH_SIZE = 256
+
 // 修改 confirmAddDocument 函数
 async function confirmAddDocument() {
   // 检查是否已经在处理请求
@@ -865,30 +868,59 @@ async function confirmAddDocument() {
       return
     }
 
-    // 发送API请求
-    const response = await axios.post(
-      `/api/v1/knowledgebases/${currentKnowledgeBase.value.id}/documents`,
-      { file_ids: allFileIds }
+    // 分批处理文件
+    const totalFiles = allFileIds.length
+    let successCount = 0
+    let failCount = 0
+
+    // 显示进度对话框
+    const progressDialog = ElMessageBox.alert(
+      `准备添加 ${totalFiles} 个文件到知识库，将分批处理...`,
+      "添加文档",
+      {
+        confirmButtonText: "确定",
+        callback: async () => {
+          // 开始分批处理
+          for (let i = 0; i < totalFiles; i += BATCH_SIZE) {
+            const batchFileIds = allFileIds.slice(i, i + BATCH_SIZE)
+            const currentBatch = Math.floor(i / BATCH_SIZE) + 1
+            const totalBatches = Math.ceil(totalFiles / BATCH_SIZE)
+            
+            try {
+              ElMessage.info(`正在处理第 ${currentBatch}/${totalBatches} 批文件...`)
+              
+              const response = await axios.post(
+                `/api/v1/knowledgebases/${currentKnowledgeBase.value.id}/documents`,
+                { file_ids: batchFileIds }
+              )
+
+              if (response.data && (response.data.code === 0 || response.data.code === 201)) {
+                successCount += batchFileIds.length
+                ElMessage.success(`第 ${currentBatch} 批文件添加成功`)
+              } else {
+                failCount += batchFileIds.length
+                ElMessage.error(`第 ${currentBatch} 批文件添加失败: ${response.data?.message || "未知错误"}`)
+              }
+            } catch (error: any) {
+              failCount += batchFileIds.length
+              ElMessage.error(`第 ${currentBatch} 批文件添加失败: ${error?.message || "未知错误"}`)
+            }
+          }
+
+          // 显示最终结果
+          if (successCount > 0) {
+            ElMessage.success(`成功添加 ${successCount} 个文档到知识库${failCount > 0 ? `，${failCount} 个文档添加失败` : ""}`)
+          } else {
+            ElMessage.error("所有文档添加失败")
+          }
+
+          addDocumentDialogVisible.value = false
+          getDocumentList()
+          getTableData()
+        }
+      }
     )
 
-    console.log("API原始响应:", response)
-
-    // 检查响应状态
-    if (response.data && (response.data.code === 0 || response.data.code === 201)) {
-      // 成功处理
-      if (!messageShown.value) {
-        messageShown.value = true
-        console.log("显示成功消息")
-        ElMessage.success(`成功添加 ${allFileIds.length} 个文档到知识库`)
-      }
-
-      addDocumentDialogVisible.value = false
-      getDocumentList()
-      getTableData()
-    } else {
-      // 处理错误响应
-      throw new Error(response.data?.message || "添加文档失败")
-    }
   } catch (error: any) {
     // API调用失败
     console.error("API请求失败详情:", {
