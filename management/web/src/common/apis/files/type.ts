@@ -23,6 +23,28 @@ export interface FileData {
 }
 
 /**
+ * 文件夹数据类型
+ */
+export interface FolderData {
+  /** 文件夹ID */
+  id: string
+  /** 文件夹名称 */
+  name: string
+  /** 父文件夹ID */
+  parent_id: string
+  /** 文件夹类型 */
+  type: string
+  /** 文件夹大小 */
+  size: number
+  /** 创建时间 */
+  create_time: number
+  /** 创建日期 */
+  create_date: string
+  /** 子文件夹列表 */
+  children?: FolderData[]
+}
+
+/**
  * 文件列表结果
  */
 export interface FileListResult {

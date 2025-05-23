@@ -1,5 +1,5 @@
 import type { AxiosResponse } from "axios"
-import type { FileData, PageQuery, PageResult } from "./type"
+import type { FileData, PageQuery, PageResult, FolderData } from "./type"
 import { request } from "@/http/axios"
 import axios from "axios"
 
@@ -7,9 +7,33 @@ import axios from "axios"
  * 获取文件列表
  * @param params 查询参数
  */
-export function getFileListApi(params: PageQuery & { name?: string }) {
+export function getFileListApi(params: PageQuery & { name?: string; parent_id?: string }) {
   return request<{ data: PageResult<FileData>, code: number, message: string }>({
     url: "/api/v1/files",
+    method: "get",
+    params
+  })
+}
+
+/**
+ * 创建文件夹
+ * @param params 创建参数
+ */
+export function createFolderApi(params: { parent_id?: string; folder_name: string; user_id?: string }) {
+  return request<{ data: FolderData, code: number, message: string }>({
+    url: "/api/v1/files/create_folder",
+    method: "post",
+    data: params
+  })
+}
+
+/**
+ * 获取文件夹树
+ * @param params 查询参数
+ */
+export function getFolderTreeApi(params?: { parent_id?: string; user_id?: string }) {
+  return request<{ data: FolderData[], code: number, message: string }>({
+    url: "/api/v1/files/folder_tree",
     method: "get",
     params
   })
@@ -94,8 +118,19 @@ export function batchDeleteFilesApi(fileIds: string[]) {
 
 /**
  * 上传文件
+ * @param formData 文件数据
+ * @param parentId 目标文件夹ID（可选）
+ * @param userId 用户ID（可选）
  */
-export function uploadFileApi(formData: FormData) {
+export function uploadFileApi(formData: FormData, parentId?: string, userId?: string) {
+  // 如果指定了目标文件夹，添加到formData中
+  if (parentId) {
+    formData.append("parent_id", parentId)
+  }
+  if (userId) {
+    formData.append("user_id", userId)
+  }
+  
   return request<{
     code: number
     data: Array<{

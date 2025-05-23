@@ -126,6 +126,7 @@ export function getDocumentChunksApi(params: {
  * @param params.name 可选的文件名称过滤
  * @param params.sort_by 排序字段
  * @param params.sort_order 排序方式（升序/降序）
+ * @param params.parent_id 可选的父目录ID，用于获取指定目录下的文件
  * @returns Promise 返回文件列表请求的响应
  */
 export function getFileListApi(params: {
@@ -134,6 +135,7 @@ export function getFileListApi(params: {
   name?: string
   sort_by: string
   sort_order: string
+  parent_id?: string
 }) {
   return request({
     url: "/api/v1/files",

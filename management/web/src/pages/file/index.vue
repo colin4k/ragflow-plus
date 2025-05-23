@@ -1,11 +1,12 @@
 <script lang="ts" setup>
 import type { FormInstance, UploadUserFile } from "element-plus"
-import { batchDeleteFilesApi, deleteFileApi, getFileListApi, uploadFileApi } from "@@/apis/files"
+import { batchDeleteFilesApi, deleteFileApi, getFileListApi, uploadFileApi, createFolderApi, getFolderTreeApi } from "@@/apis/files"
+import type { FolderData } from "@@/apis/files/type"
 import { getTableDataApi } from "@@/apis/tables"
 import { usePagination } from "@@/composables/usePagination"
-import { Delete, Download, Refresh, Search, Upload } from "@element-plus/icons-vue"
+import { Delete, Download, Refresh, Search, Upload, FolderAdd, Folder, ArrowLeft, Document, Picture } from "@element-plus/icons-vue"
 import { ElLoading, ElMessage, ElMessageBox } from "element-plus"
-import { reactive, ref } from "vue"
+import { reactive, ref, watch, onMounted, onActivated } from "vue"
 import "element-plus/dist/index.css"
 import "element-plus/theme-chalk/el-message-box.css"
 import "element-plus/theme-chalk/el-message.css"
@@ -21,6 +22,21 @@ const uploadDialogVisible = ref(false)
 const uploadFileList = ref<UploadUserFile[]>([])
 const uploadLoading = ref(false)
 
+// 创建文件夹相关
+const createFolderDialogVisible = ref(false)
+const createFolderForm = reactive({
+  folder_name: "",
+  parent_id: ""
+})
+const createFolderFormRef = ref<FormInstance | null>(null)
+const createFolderLoading = ref(false)
+
+// 文件夹树相关
+const folderTreeDialogVisible = ref(false)
+const folderTree = ref<FolderData[]>([])
+const selectedFolderId = ref<string>("")
+const selectedFolderName = ref<string>("根目录")
+
 // 定义文件数据类型
 interface FileData {
   id: string
@@ -30,6 +46,7 @@ interface FileData {
   kb_id: string
   location: string
   create_time?: number
+  parent_id?: string
 }
 
 // 查询文件列表
@@ -38,6 +55,11 @@ const searchFormRef = ref<FormInstance | null>(null)
 const searchData = reactive({
   name: ""
 })
+
+// 当前目录相关
+const currentFolderId = ref<string>("")
+const currentFolderName = ref<string>("根目录")
+const breadcrumbPath = ref<Array<{ id: string; name: string }>>([])
 
 // 排序状态
 const sortData = reactive({
@@ -57,7 +79,8 @@ function getTableData() {
     size: paginationData.pageSize,
     name: searchData.name,
     sort_by: sortData.sortBy,
-    sort_order: sortData.sortOrder
+    sort_order: sortData.sortOrder,
+    parent_id: currentFolderId.value || undefined
   }).then(({ data }) => {
     paginationData.total = data.total
     tableData.value = data.list
@@ -70,6 +93,17 @@ function getTableData() {
   })
 }
 
+// 获取文件夹树
+async function getFolderTree() {
+  try {
+    const response = await getFolderTreeApi()
+    folderTree.value = response.data
+  } catch (error) {
+    ElMessage.error("获取文件夹树失败")
+    folderTree.value = []
+  }
+}
+
 // 搜索处理
 function handleSearch() {
   paginationData.currentPage === 1 ? getTableData() : (paginationData.currentPage = 1)
@@ -79,6 +113,171 @@ function handleSearch() {
 function resetSearch() {
   searchFormRef.value?.resetFields()
   handleSearch()
+}
+
+// 进入文件夹
+function enterFolder(folder: FileData) {
+  if (folder.type !== 'folder') return
+  
+  currentFolderId.value = folder.id
+  currentFolderName.value = folder.name
+  
+  // 自动将上传目录设置为当前目录
+  selectedFolderId.value = folder.id
+  selectedFolderName.value = folder.name
+  
+  // 更新面包屑导航
+  breadcrumbPath.value.push({ id: folder.id, name: folder.name })
+  
+  // 重置分页并刷新数据
+  paginationData.currentPage = 1
+  getTableData()
+}
+
+// 返回上级目录
+function goBack() {
+  if (breadcrumbPath.value.length === 0) return
+  
+  breadcrumbPath.value.pop()
+  
+  if (breadcrumbPath.value.length === 0) {
+    currentFolderId.value = ""
+    currentFolderName.value = "根目录"
+    // 自动将上传目录设置为根目录
+    selectedFolderId.value = ""
+    selectedFolderName.value = "根目录"
+  } else {
+    const parent = breadcrumbPath.value[breadcrumbPath.value.length - 1]
+    currentFolderId.value = parent.id
+    currentFolderName.value = parent.name
+    // 自动将上传目录设置为当前目录
+    selectedFolderId.value = parent.id
+    selectedFolderName.value = parent.name
+  }
+  
+  // 重置分页并刷新数据
+  paginationData.currentPage = 1
+  getTableData()
+}
+
+// 导航到指定目录
+function navigateToFolder(folderId: string, folderName: string) {
+  // 找到目标文件夹在面包屑中的位置
+  const targetIndex = breadcrumbPath.value.findIndex(item => item.id === folderId)
+  
+  if (targetIndex >= 0) {
+    // 截取面包屑到目标位置
+    breadcrumbPath.value = breadcrumbPath.value.slice(0, targetIndex + 1)
+  } else if (folderId === "") {
+    // 返回根目录
+    breadcrumbPath.value = []
+  }
+  
+  currentFolderId.value = folderId
+  currentFolderName.value = folderName
+  
+  // 自动将上传目录设置为当前目录
+  selectedFolderId.value = folderId
+  selectedFolderName.value = folderName
+  
+  // 重置分页并刷新数据
+  paginationData.currentPage = 1
+  getTableData()
+}
+
+// 获取文件图标
+function getFileIcon(file: FileData) {
+  if (file.type === 'folder') {
+    return 'Folder'
+  }
+  
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'pdf':
+      return 'Document'
+    case 'doc':
+    case 'docx':
+      return 'Document'
+    case 'xls':
+    case 'xlsx':
+      return 'Document'
+    case 'ppt':
+    case 'pptx':
+      return 'Document'
+    case 'jpg':
+    case 'jpeg':
+    case 'png':
+    case 'gif':
+    case 'bmp':
+      return 'Picture'
+    case 'txt':
+    case 'md':
+      return 'Document'
+    case 'html':
+      return 'Document'
+    default:
+      return 'Document'
+  }
+}
+
+// 修改创建文件夹函数，使用当前目录
+function handleCreateFolder() {
+  createFolderDialogVisible.value = true
+  createFolderForm.folder_name = ""
+  createFolderForm.parent_id = currentFolderId.value
+}
+
+// 修改选择上传目录，默认使用当前目录
+function handleSelectUploadFolder() {
+  folderTreeDialogVisible.value = true
+  getFolderTree()
+  // 如果当前在某个目录下，默认选择当前目录
+  if (currentFolderId.value) {
+    selectedFolderId.value = currentFolderId.value
+    selectedFolderName.value = currentFolderName.value
+  }
+}
+
+async function submitCreateFolder() {
+  if (!createFolderFormRef.value) return
+  
+  const valid = await createFolderFormRef.value.validate()
+  if (!valid) return
+  
+  createFolderLoading.value = true
+  try {
+    await createFolderApi({
+      folder_name: createFolderForm.folder_name,
+      parent_id: createFolderForm.parent_id || undefined
+    })
+    ElMessage.success("文件夹创建成功")
+    createFolderDialogVisible.value = false
+    getTableData()
+    getFolderTree() // 刷新文件夹树
+  } catch (error: unknown) {
+    let errorMessage = "创建文件夹失败"
+    if (error instanceof Error) {
+      errorMessage += `: ${error.message}`
+    }
+    ElMessage.error(errorMessage)
+  } finally {
+    createFolderLoading.value = false
+  }
+}
+
+// 选择文件夹
+function selectFolder(folder: FolderData) {
+  selectedFolderId.value = folder.id
+  selectedFolderName.value = folder.name
+  folderTreeDialogVisible.value = false
+  ElMessage.success(`已选择目录: ${folder.name}`)
+}
+
+// 重置目录选择
+function resetFolderSelection() {
+  selectedFolderId.value = ""
+  selectedFolderName.value = "根目录"
+  ElMessage.success("已重置为根目录")
 }
 
 // 添加上传方法
@@ -96,7 +295,10 @@ async function submitUpload() {
       }
     })
 
-    await uploadFileApi(formData)
+    // 使用选择的上传目录，如果没有选择则使用当前目录
+    const targetFolderId = selectedFolderId.value || currentFolderId.value || undefined
+    
+    await uploadFileApi(formData, targetFolderId)
     ElMessage.success("文件上传成功")
     getTableData()
     uploadDialogVisible.value = false
@@ -308,6 +510,9 @@ watch([() => paginationData.currentPage, () => paginationData.pageSize], getTabl
 
 // 确保页面挂载和激活时获取数据
 onMounted(() => {
+  // 初始化时确保上传目录和当前目录保持同步
+  selectedFolderId.value = currentFolderId.value
+  selectedFolderName.value = currentFolderName.value
   getTableData()
 })
 
@@ -335,8 +540,53 @@ onActivated(() => {
       </el-form>
     </el-card>
     <el-card v-loading="loading" shadow="never">
+      <!-- 面包屑导航 -->
+      <div class="breadcrumb-wrapper">
+        <el-breadcrumb separator="/">
+          <el-breadcrumb-item>
+            <el-button 
+              type="primary" 
+              text 
+              @click="navigateToFolder('', '根目录')"
+              :class="{ 'current-folder': currentFolderId === '' }"
+            >
+              根目录
+            </el-button>
+          </el-breadcrumb-item>
+          <el-breadcrumb-item 
+            v-for="(folder, index) in breadcrumbPath" 
+            :key="folder.id"
+          >
+            <el-button 
+              type="primary" 
+              text 
+              @click="navigateToFolder(folder.id, folder.name)"
+              :class="{ 'current-folder': index === breadcrumbPath.length - 1 }"
+            >
+              {{ folder.name }}
+            </el-button>
+          </el-breadcrumb-item>
+        </el-breadcrumb>
+        <el-button 
+          v-if="breadcrumbPath.length > 0"
+          type="info" 
+          :icon="ArrowLeft" 
+          @click="goBack"
+          size="small"
+        >
+          返回上级
+        </el-button>
+      </div>
+
       <div class="toolbar-wrapper">
         <div>
+          <el-button
+            type="success"
+            :icon="FolderAdd"
+            @click="handleCreateFolder"
+          >
+            新建文件夹
+          </el-button>
           <el-button
             type="primary"
             :icon="Upload"
@@ -353,13 +603,130 @@ onActivated(() => {
             批量删除
           </el-button>
         </div>
+        <div class="folder-info">
+          <span class="folder-label">当前目录：</span>
+          <el-tag type="info" size="large">{{ currentFolderName }}</el-tag>
+          <span class="folder-label">上传目录：</span>
+          <el-tag type="success" size="large">{{ selectedFolderName }}</el-tag>
+          <el-button
+            type="info"
+            :icon="Folder"
+            size="small"
+            @click="handleSelectUploadFolder"
+          >
+            选择目录
+          </el-button>
+          <el-button
+            type="warning"
+            size="small"
+            @click="resetFolderSelection"
+          >
+            重置
+          </el-button>
+        </div>
       </div>
+
+      <!-- 创建文件夹对话框 -->
+      <el-dialog
+        v-model="createFolderDialogVisible"
+        title="新建文件夹"
+        width="400px"
+      >
+        <el-form
+          ref="createFolderFormRef"
+          :model="createFolderForm"
+          label-width="80px"
+        >
+          <el-form-item
+            label="文件夹名"
+            prop="folder_name"
+            :rules="[
+              { required: true, message: '请输入文件夹名称', trigger: 'blur' },
+              { min: 1, max: 50, message: '长度在 1 到 50 个字符', trigger: 'blur' }
+            ]"
+          >
+            <el-input
+              v-model="createFolderForm.folder_name"
+              placeholder="请输入文件夹名称"
+              maxlength="50"
+              show-word-limit
+            />
+          </el-form-item>
+          <el-form-item label="父目录">
+            <el-input
+              :value="currentFolderName"
+              readonly
+              placeholder="根目录"
+            />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button @click="createFolderDialogVisible = false">
+            取消
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="createFolderLoading"
+            @click="submitCreateFolder"
+          >
+            确认创建
+          </el-button>
+        </template>
+      </el-dialog>
+
+      <!-- 文件夹树选择对话框 -->
+      <el-dialog
+        v-model="folderTreeDialogVisible"
+        title="选择上传目录"
+        width="500px"
+      >
+        <div class="folder-tree-container">
+          <div class="root-folder">
+            <el-button
+              type="primary"
+              plain
+              @click="selectFolder({ id: '', name: '根目录', parent_id: '', type: 'folder', size: 0, create_time: 0, create_date: '' })"
+            >
+              <el-icon><Folder /></el-icon>
+              根目录
+            </el-button>
+          </div>
+          <el-tree
+            v-if="folderTree.length > 0"
+            :data="folderTree"
+            :props="{ children: 'children', label: 'name' }"
+            node-key="id"
+            class="folder-tree"
+          >
+            <template #default="{ node, data }">
+              <div class="tree-node">
+                <el-icon><Folder /></el-icon>
+                <span class="node-label">{{ node.label }}</span>
+                <el-button
+                  type="primary"
+                  size="small"
+                  @click="selectFolder(data)"
+                >
+                  选择
+                </el-button>
+              </div>
+            </template>
+          </el-tree>
+          <div v-else class="empty-tree">
+            <el-empty description="暂无文件夹" />
+          </div>
+        </div>
+      </el-dialog>
+
       <!-- 上传对话框 -->
       <el-dialog
         v-model="uploadDialogVisible"
         title="上传文件"
-        width="30%"
+        width="500px"
       >
+        <div class="upload-info">
+          <p><strong>上传目录：</strong>{{ selectedFolderName }}</p>
+        </div>
         <el-upload
           v-model:file-list="uploadFileList"
           multiple
@@ -386,6 +753,7 @@ onActivated(() => {
           </el-button>
         </template>
       </el-dialog>
+
       <div class="table-wrapper">
         <el-table :data="tableData" @selection-change="handleSelectionChange" @sort-change="handleSortChange">
           <el-table-column type="selection" width="50" align="center" />
@@ -394,19 +762,52 @@ onActivated(() => {
               {{ (paginationData.currentPage - 1) * paginationData.pageSize + scope.$index + 1 }}
             </template>
           </el-table-column>
-          <el-table-column prop="name" label="文档名" align="center" sortable="custom" />
-          <el-table-column label="大小" align="center" width="120" sortable="custom">
+          <el-table-column prop="name" label="文档名" align="center" sortable="custom">
             <template #default="scope">
-              {{ formatFileSize(scope.row.size) }}
+              <div class="file-name-cell" @dblclick="scope.row.type === 'folder' ? enterFolder(scope.row) : null">
+                <el-icon class="file-icon" :class="{ 'folder-icon': scope.row.type === 'folder' }">
+                  <component :is="getFileIcon(scope.row)" />
+                </el-icon>
+                <span 
+                  :class="{ 'folder-name': scope.row.type === 'folder', 'file-name': scope.row.type !== 'folder' }"
+                  :title="scope.row.type === 'folder' ? '双击进入文件夹' : scope.row.name"
+                >
+                  {{ scope.row.name }}
+                </span>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column prop="type" label="类型" align="center" width="120" sortable="custom" />
+          <el-table-column label="大小" align="center" width="120" sortable="custom">
+            <template #default="scope">
+              <span v-if="scope.row.type === 'folder'">-</span>
+              <span v-else>{{ formatFileSize(scope.row.size) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="type" label="类型" align="center" width="120" sortable="custom">
+            <template #default="scope">
+              <el-tag v-if="scope.row.type === 'folder'" type="warning">文件夹</el-tag>
+              <el-tag v-else type="info">{{ scope.row.type }}</el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="create_date" label="创建时间" align="center" width="180" sortable="custom" />
           <el-table-column fixed="right" label="操作" width="180" align="center">
             <template #default="scope">
-              <el-button type="primary" text bg size="small" :icon="Download" @click="handleDownload(scope.row)">
-                下载
+              <el-button 
+                v-if="scope.row.type === 'folder'" 
+                type="primary" 
+                text 
+                bg 
+                size="small" 
+                :icon="Folder" 
+                @click="enterFolder(scope.row)"
+              >
+                进入
               </el-button>
+              <template v-else>
+                <el-button type="primary" text bg size="small" :icon="Download" @click="handleDownload(scope.row)">
+                  下载
+                </el-button>
+              </template>
               <el-button type="danger" text bg size="small" :icon="Delete" @click="handleDelete(scope.row)">
                 删除
               </el-button>
@@ -455,6 +856,98 @@ onActivated(() => {
 .pager-wrapper {
   display: flex;
   justify-content: flex-end;
+}
+
+.folder-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.folder-label {
+  font-weight: 600;
+}
+
+.upload-info {
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.folder-tree-container {
+  height: 300px;
+  overflow-y: auto;
+}
+
+.root-folder {
+  margin-bottom: 10px;
+}
+
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.node-label {
+  flex-grow: 1;
+}
+
+.empty-tree {
+  text-align: center;
+  padding: 20px;
+}
+
+.breadcrumb-wrapper {
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.current-folder {
+  font-weight: bold;
+  color: #409eff !important;
+}
+
+.file-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.file-icon {
+  font-size: 18px;
+}
+
+.folder-icon {
+  color: #f39c12;
+}
+
+.folder-name {
+  color: #409eff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.folder-name:hover {
+  text-decoration: underline;
+}
+
+.file-name {
+  color: #606266;
+}
+
+.folder-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.folder-label {
+  font-weight: 600;
+  white-space: nowrap;
 }
 </style>
 

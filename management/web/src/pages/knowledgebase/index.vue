@@ -20,7 +20,7 @@ import {
 } from "@@/apis/kbs/knowledgebase"
 import { getTableDataApi } from "@@/apis/tables"
 import { usePagination } from "@@/composables/usePagination"
-import { CaretRight, Delete, Edit, Loading, Plus, Refresh, Search, Setting, View } from "@element-plus/icons-vue"
+import { CaretRight, Delete, Edit, Loading, Plus, Refresh, Search, Setting, View, Folder, ArrowLeft, Document, Picture } from "@element-plus/icons-vue"
 
 import axios from "axios"
 import { ElMessage, ElMessageBox } from "element-plus"
@@ -444,7 +444,7 @@ function handleBatchParse() {
       dangerouslyUseHTMLString: true // 允许使用 HTML 标签
     }
   ).then(async () => {
-    batchParsingLoading.value = true // 标记“正在启动”状态
+    batchParsingLoading.value = true // 标记"正在启动"状态
     batchProgress.value = null
     try {
       const res = await startSequentialBatchParseAsyncApi(kbId)
@@ -454,19 +454,19 @@ function handleBatchParse() {
         ElMessage.success(res.data.message || `已成功启动批量解析任务`)
         // --- 关键：启动轮询来监控进度 ---
         startBatchPolling()
-        // 可以在启动后稍微延迟一下再刷新列表，尝试显示“解析中”的状态
+        // 可以在启动后稍微延迟一下再刷新列表，尝试显示"解析中"的状态
         setTimeout(getDocumentList, 1500)
       } else {
         // 启动 API 本身调用失败，或后端返回了错误
         const errorMsg = res.data?.message || res.message || "启动批量解析任务失败"
         ElMessage.error(errorMsg)
-        batchParsingLoading.value = false // 启动失败，取消“正在启动”状态
+        batchParsingLoading.value = false // 启动失败，取消"正在启动"状态
       }
     } catch (error: any) {
       // 请求启动 API 时发生网络错误或其他异常
       ElMessage.error(`启动批量解析任务时出错: ${error?.message || "网络错误"}`)
       console.error("启动批量解析任务失败:", error)
-      batchParsingLoading.value = false // 启动异常，取消“正在启动”状态
+      batchParsingLoading.value = false // 启动异常，取消"正在启动"状态
     } finally {
       // 只有在 *没有* 成功启动轮询的情况下，才将 batchParsingLoading 设置为 false
       // 如果轮询已开始，则由 isBatchPolling 状态控制按钮和界面的显示
@@ -475,7 +475,7 @@ function handleBatchParse() {
       }
     }
   }).catch(() => {
-    // 用户点击了“取消”按钮
+    // 用户点击了"取消"按钮
     ElMessage.info("已取消批量解析操作")
   })
 }
@@ -606,6 +606,14 @@ const addDocumentDialogVisible = ref(false)
 const selectedFiles = ref<string[]>([])
 const fileLoading = ref(false)
 const fileList = ref<any[]>([])
+
+// 添加目录导航相关状态
+const currentFolderId = ref<string>("")
+const currentFolderName = ref<string>("根目录")
+const breadcrumbPath = ref<Array<{ id: string; name: string }>>([])
+const selectedFolders = ref<string[]>([]) // 选中的文件夹ID列表
+
+// 文件列表分页数据
 const filePaginationData = reactive({
   currentPage: 1,
   pageSize: 10,
@@ -617,22 +625,27 @@ const filePaginationData = reactive({
 // 处理添加文档
 function handleAddDocument() {
   addDocumentDialogVisible.value = true
-  // 重置选择
+  // 重置选择和导航状态
   selectedFiles.value = []
+  selectedFolders.value = []
+  currentFolderId.value = ""
+  currentFolderName.value = "根目录"
+  breadcrumbPath.value = []
   // 获取文件列表
   getFileList()
 }
 
-// 获取文件列表
+// 获取文件列表（支持目录参数）
 function getFileList() {
   fileLoading.value = true
-  // 调用获取文件列表的API
+  // 调用获取文件列表的API，传入当前目录ID
   getFileListApi({
     currentPage: filePaginationData.currentPage,
     size: filePaginationData.pageSize,
     name: "",
     sort_by: fileSortData.sortBy,
-    sort_order: fileSortData.sortOrder
+    sort_order: fileSortData.sortOrder,
+    parent_id: currentFolderId.value || undefined
   }).then((response) => {
     const typedResponse = response as ApiResponse<FileListResponse>
     fileList.value = typedResponse.data.list
@@ -643,6 +656,131 @@ function getFileList() {
   }).finally(() => {
     fileLoading.value = false
   })
+}
+
+// 进入文件夹
+function enterFolder(folder: any) {
+  if (folder.type !== 'folder') return
+  
+  currentFolderId.value = folder.id
+  currentFolderName.value = folder.name
+  
+  // 更新面包屑导航
+  breadcrumbPath.value.push({ id: folder.id, name: folder.name })
+  
+  // 重置分页并刷新数据
+  filePaginationData.currentPage = 1
+  getFileList()
+}
+
+// 返回上级目录
+function goBackInDialog() {
+  if (breadcrumbPath.value.length === 0) return
+  
+  breadcrumbPath.value.pop()
+  
+  if (breadcrumbPath.value.length === 0) {
+    currentFolderId.value = ""
+    currentFolderName.value = "根目录"
+  } else {
+    const parent = breadcrumbPath.value[breadcrumbPath.value.length - 1]
+    currentFolderId.value = parent.id
+    currentFolderName.value = parent.name
+  }
+  
+  // 重置分页并刷新数据
+  filePaginationData.currentPage = 1
+  getFileList()
+}
+
+// 导航到指定目录
+function navigateToFolderInDialog(folderId: string, folderName: string) {
+  // 找到目标文件夹在面包屑中的位置
+  const targetIndex = breadcrumbPath.value.findIndex(item => item.id === folderId)
+  
+  if (targetIndex >= 0) {
+    // 截取面包屑到目标位置
+    breadcrumbPath.value = breadcrumbPath.value.slice(0, targetIndex + 1)
+  } else if (folderId === "") {
+    // 返回根目录
+    breadcrumbPath.value = []
+  }
+  
+  currentFolderId.value = folderId
+  currentFolderName.value = folderName
+  
+  // 重置分页并刷新数据
+  filePaginationData.currentPage = 1
+  getFileList()
+}
+
+// 获取文件图标
+function getFileIconInDialog(file: any) {
+  if (file.type === 'folder') {
+    return 'Folder'
+  }
+  
+  const ext = file.name.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'pdf':
+      return 'Document'
+    case 'doc':
+    case 'docx':
+      return 'Document'
+    case 'xls':
+    case 'xlsx':
+      return 'Document'
+    case 'ppt':
+    case 'pptx':
+      return 'Document'
+    case 'jpg':
+    case 'jpeg':
+    case 'png':
+    case 'gif':
+    case 'bmp':
+      return 'Picture'
+    case 'txt':
+    case 'md':
+      return 'Document'
+    case 'html':
+      return 'Document'
+    default:
+      return 'Document'
+  }
+}
+
+// 获取文件夹下所有文件的ID（递归）
+async function getFolderAllFileIds(folderId: string): Promise<string[]> {
+  try {
+    const response = await getFileListApi({
+      currentPage: 1,
+      size: 1000, // 获取大量数据
+      name: "",
+      sort_by: "name",
+      sort_order: "asc",
+      parent_id: folderId
+    })
+    
+    const typedResponse = response as ApiResponse<FileListResponse>
+    const items = typedResponse.data.list
+    let fileIds: string[] = []
+    
+    for (const item of items) {
+      if (item.type === 'folder') {
+        // 递归获取子文件夹的文件
+        const subFileIds = await getFolderAllFileIds(item.id)
+        fileIds = fileIds.concat(subFileIds)
+      } else {
+        // 添加文件ID
+        fileIds.push(item.id)
+      }
+    }
+    
+    return fileIds
+  } catch (error) {
+    console.error(`获取文件夹 ${folderId} 下的文件失败:`, error)
+    return []
+  }
 }
 
 /**
@@ -666,8 +804,12 @@ function handleFileSortChange({ prop }: { prop: string, order: string | null }) 
 
 // 处理文件选择变化
 function handleFileSelectionChange(selection: any[]) {
-  // 使用Array.from和JSON方法双重确保转换为普通数组
-  selectedFiles.value = JSON.parse(JSON.stringify(Array.from(selection).map(item => item.id)))
+  // 分别处理文件和文件夹
+  const files = selection.filter(item => item.type !== 'folder')
+  const folders = selection.filter(item => item.type === 'folder')
+  
+  selectedFiles.value = files.map(item => item.id)
+  selectedFolders.value = folders.map(item => item.id)
 }
 
 // 添加一个请求锁变量
@@ -682,8 +824,8 @@ async function confirmAddDocument() {
     return
   }
 
-  if (selectedFiles.value.length === 0) {
-    ElMessage.warning("请至少选择一个文件")
+  if (selectedFiles.value.length === 0 && selectedFolders.value.length === 0) {
+    ElMessage.warning("请至少选择一个文件或文件夹")
     return
   }
 
@@ -692,16 +834,41 @@ async function confirmAddDocument() {
   try {
     // 设置请求锁
     isAddingDocument.value = true
-    messageShown.value = false // 重置消息显示标志，使用组件级别的变量
-    console.log("开始添加文档请求...", selectedFiles.value)
+    messageShown.value = false
+    console.log("开始添加文档请求...", { files: selectedFiles.value, folders: selectedFolders.value })
 
-    // 直接处理文件ID，不再弹出确认对话框
-    const fileIds = JSON.parse(JSON.stringify([...selectedFiles.value]))
+    // 收集所有要添加的文件ID
+    let allFileIds = [...selectedFiles.value]
+    
+    // 如果选择了文件夹，获取文件夹下的所有文件
+    if (selectedFolders.value.length > 0) {
+      ElMessage.info("正在扫描文件夹中的文件...")
+      
+      for (const folderId of selectedFolders.value) {
+        const folderFileIds = await getFolderAllFileIds(folderId)
+        allFileIds = allFileIds.concat(folderFileIds)
+      }
+      
+      // 去重
+      allFileIds = [...new Set(allFileIds)]
+      
+      if (allFileIds.length === 0) {
+        ElMessage.warning("选择的文件夹中没有找到任何文件")
+        return
+      }
+      
+      console.log(`从文件夹中找到 ${allFileIds.length} 个文件`)
+    }
 
-    // 发送API请求 - 移除不必要的内层 try/catch
+    if (allFileIds.length === 0) {
+      ElMessage.warning("没有找到可添加的文件")
+      return
+    }
+
+    // 发送API请求
     const response = await axios.post(
       `/api/v1/knowledgebases/${currentKnowledgeBase.value.id}/documents`,
-      { file_ids: fileIds }
+      { file_ids: allFileIds }
     )
 
     console.log("API原始响应:", response)
@@ -712,7 +879,7 @@ async function confirmAddDocument() {
       if (!messageShown.value) {
         messageShown.value = true
         console.log("显示成功消息")
-        ElMessage.success("文档添加成功")
+        ElMessage.success(`成功添加 ${allFileIds.length} 个文档到知识库`)
       }
 
       addDocumentDialogVisible.value = false
@@ -731,13 +898,6 @@ async function confirmAddDocument() {
       request: error?.request,
       config: error?.config
     })
-
-    // 添加更详细的错误日志
-    console.log("错误详情:", error)
-    if (error.response) {
-      console.log("响应数据:", error.response.data)
-      console.log("响应状态:", error.response.status)
-    }
 
     ElMessage.error(`添加文档失败: ${error?.message || "未知错误"}`)
   } finally {
@@ -1434,6 +1594,53 @@ const userLoading = ref(false)
         width="70%"
       >
         <div v-loading="fileLoading">
+          <!-- 面包屑导航 -->
+          <div class="breadcrumb-wrapper" style="margin-bottom: 16px;">
+            <el-breadcrumb separator="/">
+              <el-breadcrumb-item>
+                <el-button 
+                  type="primary" 
+                  text 
+                  @click="navigateToFolderInDialog('', '根目录')"
+                  :class="{ 'current-folder': currentFolderId === '' }"
+                >
+                  根目录
+                </el-button>
+              </el-breadcrumb-item>
+              <el-breadcrumb-item 
+                v-for="(folder, index) in breadcrumbPath" 
+                :key="folder.id"
+              >
+                <el-button 
+                  type="primary" 
+                  text 
+                  @click="navigateToFolderInDialog(folder.id, folder.name)"
+                  :class="{ 'current-folder': index === breadcrumbPath.length - 1 }"
+                >
+                  {{ folder.name }}
+                </el-button>
+              </el-breadcrumb-item>
+            </el-breadcrumb>
+            <el-button 
+              v-if="breadcrumbPath.length > 0"
+              type="info" 
+              :icon="ArrowLeft" 
+              @click="goBackInDialog"
+              size="small"
+            >
+              返回上级
+            </el-button>
+          </div>
+
+          <!-- 当前目录信息 -->
+          <div style="margin-bottom: 16px; color: #606266; font-size: 14px;">
+            <span>当前目录：{{ currentFolderName }}</span>
+            <span style="margin-left: 20px;">
+              已选择：{{ selectedFiles.length }} 个文件
+              <span v-if="selectedFolders.length > 0">，{{ selectedFolders.length }} 个文件夹</span>
+            </span>
+          </div>
+
           <el-table
             :data="fileList"
             style="width: 100%"
@@ -1441,20 +1648,66 @@ const userLoading = ref(false)
             @sort-change="handleFileSortChange"
           >
             <el-table-column type="selection" width="55" />
-            <el-table-column prop="name" label="文件名" min-width="180" show-overflow-tooltip sortable="custom" />
+            <el-table-column prop="name" label="文件名" min-width="180" show-overflow-tooltip sortable="custom">
+              <template #default="scope">
+                <div 
+                  class="file-name-cell" 
+                  @dblclick="scope.row.type === 'folder' ? enterFolder(scope.row) : null"
+                  style="display: flex; align-items: center; gap: 8px; cursor: pointer;"
+                >
+                  <el-icon 
+                    class="file-icon" 
+                    :class="{ 'folder-icon': scope.row.type === 'folder' }"
+                    style="font-size: 18px;"
+                  >
+                    <component :is="getFileIconInDialog(scope.row)" />
+                  </el-icon>
+                  <span 
+                    :class="{ 
+                      'folder-name': scope.row.type === 'folder', 
+                      'file-name': scope.row.type !== 'folder' 
+                    }"
+                    :title="scope.row.type === 'folder' ? '双击进入文件夹' : scope.row.name"
+                    :style="{
+                      color: scope.row.type === 'folder' ? '#409eff' : '#606266',
+                      fontWeight: scope.row.type === 'folder' ? '600' : 'normal'
+                    }"
+                  >
+                    {{ scope.row.name }}
+                  </span>
+                </div>
+              </template>
+            </el-table-column>
             <el-table-column prop="size" label="大小" width="100" align="center" sortable="custom">
               <template #default="scope">
-                {{ formatFileSize(scope.row.size) }}
+                <span v-if="scope.row.type === 'folder'">-</span>
+                <span v-else>{{ formatFileSize(scope.row.size) }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="type" label="类型" width="100" align="center">
               <template #default="scope">
-                {{ formatFileType(scope.row.type) }}
+                <el-tag v-if="scope.row.type === 'folder'" type="warning">文件夹</el-tag>
+                <el-tag v-else type="info">{{ formatFileType(scope.row.type) }}</el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="create_date" label="创建时间" align="center" width="180" sortable="custom">
               <template #default="scope">
                 {{ scope.row.create_date }}
+              </template>
+            </el-table-column>
+            <el-table-column fixed="right" label="操作" width="120" align="center">
+              <template #default="scope">
+                <el-button 
+                  v-if="scope.row.type === 'folder'" 
+                  type="primary" 
+                  text 
+                  bg 
+                  size="small" 
+                  :icon="Folder" 
+                  @click="enterFolder(scope.row)"
+                >
+                  进入
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1627,7 +1880,6 @@ const userLoading = ref(false)
 .form-tip {
   color: #909399;
   font-size: 12px;
-  line-height: 1.5;
   margin-top: 4px;
 }
 
@@ -1691,5 +1943,51 @@ const userLoading = ref(false)
   margin-right: 4px;
   vertical-align: middle;
   animation: rotating 2s linear infinite;
+}
+
+/* 添加面包屑导航样式 */
+.breadcrumb-wrapper {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: #f5f7fa;
+  border-radius: 4px;
+  border: 1px solid #e4e7ed;
+}
+
+.current-folder {
+  font-weight: bold;
+  color: #409eff !important;
+}
+
+/* 文件夹图标样式 */
+.folder-icon {
+  color: #f39c12;
+}
+
+.folder-name {
+  color: #409eff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.folder-name:hover {
+  text-decoration: underline;
+}
+
+.file-name {
+  color: #606266;
+}
+
+.file-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.file-icon {
+  font-size: 18px;
 }
 </style>

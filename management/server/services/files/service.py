@@ -74,15 +74,17 @@ def get_db_connection():
     return mysql.connector.connect(**DB_CONFIG)
 
 
-def get_files_list(current_page, page_size, name_filter="", sort_by="create_time", sort_order="desc"):
+def get_files_list(current_page, page_size, name_filter="", sort_by="create_time", sort_order="desc", parent_id=None):
     """
     获取文件列表
 
     Args:
         current_page: 当前页码
         page_size: 每页大小
-        parent_id: 父文件夹ID
         name_filter: 文件名过滤条件
+        sort_by: 排序字段
+        sort_order: 排序方向
+        parent_id: 父文件夹ID，如果为None则获取根目录
 
     Returns:
         tuple: (文件列表, 总数)
@@ -95,9 +97,43 @@ def get_files_list(current_page, page_size, name_filter="", sort_by="create_time
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        # 构建查询条件
-        where_clause = "WHERE f.type != 'folder'"  # 排除文件夹类型
-        params = []
+        # 如果没有指定parent_id，获取根目录
+        if parent_id is None:
+            # 查询用户的根目录
+            try:
+                query_earliest_user = """
+                SELECT id FROM user 
+                WHERE create_time = (SELECT MIN(create_time) FROM user)
+                LIMIT 1
+                """
+                cursor.execute(query_earliest_user)
+                earliest_user = cursor.fetchone()
+                user_id = earliest_user["id"] if earliest_user else "system"
+
+                query_root_folder = """
+                SELECT id FROM file 
+                WHERE tenant_id = %s AND parent_id = id AND type = 'folder'
+                LIMIT 1
+                """
+                cursor.execute(query_root_folder, (user_id,))
+                root_folder = cursor.fetchone()
+                
+                if root_folder:
+                    parent_id = root_folder["id"]
+                else:
+                    # 如果没有根目录，返回空列表
+                    cursor.close()
+                    conn.close()
+                    return [], 0
+            except Exception as e:
+                logger.error(f"获取根目录失败: {str(e)}")
+                cursor.close()
+                conn.close()
+                return [], 0
+
+        # 构建查询条件 - 现在包含文件夹
+        where_clause = "WHERE f.parent_id = %s"
+        params = [parent_id]
 
         if name_filter:
             where_clause += " AND f.name LIKE %s"
@@ -108,8 +144,8 @@ def get_files_list(current_page, page_size, name_filter="", sort_by="create_time
         if sort_by not in valid_sort_fields:
             sort_by = "create_time"
 
-        # 构建排序子句
-        sort_clause = f"ORDER BY f.{sort_by} {sort_order.upper()}"
+        # 构建排序子句 - 文件夹优先显示
+        sort_clause = f"ORDER BY CASE WHEN f.type = 'folder' THEN 0 ELSE 1 END, f.{sort_by} {sort_order.upper()}"
 
         # 查询总数
         count_query = f"""
@@ -470,6 +506,273 @@ def batch_delete_files(file_ids):
         raise e
 
 
+def create_folder(parent_id, folder_name, user_id=None):
+    """
+    创建文件夹
+
+    Args:
+        parent_id: 父文件夹ID
+        folder_name: 文件夹名称
+        user_id: 用户ID
+
+    Returns:
+        dict: 创建的文件夹信息
+    """
+    try:
+        logger.info(f"开始创建文件夹: {folder_name}, 父目录: {parent_id}")
+        
+        if user_id is None:
+            try:
+                logger.info("未提供user_id，尝试获取最早创建的用户ID")
+                conn = get_db_connection()
+                cursor = conn.cursor(dictionary=True)
+
+                # 查询创建时间最早的用户ID
+                query_earliest_user = """
+                SELECT id FROM user 
+                WHERE create_time = (SELECT MIN(create_time) FROM user)
+                LIMIT 1
+                """
+                cursor.execute(query_earliest_user)
+                earliest_user = cursor.fetchone()
+
+                if earliest_user:
+                    user_id = earliest_user["id"]
+                    logger.info(f"使用创建时间最早的用户ID: {user_id}")
+                else:
+                    user_id = "system"
+                    logger.warning("未找到用户, 使用默认用户ID: system")
+
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                logger.error(f"查询最早用户ID失败: {str(e)}")
+                user_id = "system"
+
+        # 如果没有指定parent_id，则获取根目录
+        if parent_id is None:
+            try:
+                logger.info("未提供parent_id，尝试获取或创建根目录")
+                conn = get_db_connection()
+                cursor = conn.cursor(dictionary=True)
+
+                # 查询用户的根目录（parent_id等于自身id的记录）
+                query_root_folder = """
+                SELECT id FROM file 
+                WHERE tenant_id = %s AND parent_id = id AND type = 'folder'
+                LIMIT 1
+                """
+                cursor.execute(query_root_folder, (user_id,))
+                root_folder = cursor.fetchone()
+
+                if root_folder:
+                    parent_id = root_folder["id"]
+                    logger.info(f"使用现有根目录: {parent_id}")
+                else:
+                    # 创建根目录
+                    parent_id = get_uuid()
+                    current_time = int(datetime.now().timestamp())
+                    current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    root_folder_record = {
+                        "id": parent_id,
+                        "parent_id": parent_id,  # 根目录的parent_id指向自己
+                        "tenant_id": user_id,
+                        "created_by": user_id,
+                        "name": "/",
+                        "type": FileType.FOLDER.value,
+                        "size": 0,
+                        "location": "",
+                        "source_type": FileSource.LOCAL.value,
+                        "create_time": current_time,
+                        "create_date": current_date,
+                        "update_time": current_time,
+                        "update_date": current_date,
+                    }
+                    
+                    columns = ", ".join(root_folder_record.keys())
+                    placeholders = ", ".join(["%s"] * len(root_folder_record))
+                    query = f"INSERT INTO file ({columns}) VALUES ({placeholders})"
+                    cursor.execute(query, list(root_folder_record.values()))
+                    conn.commit()
+                    logger.info(f"创建新根目录: {parent_id}")
+
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                logger.error(f"获取或创建根目录失败: {str(e)}")
+                parent_id = get_uuid()
+
+        # 验证父目录是否存在
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        cursor.execute("SELECT id, type FROM file WHERE id = %s", (parent_id,))
+        parent_folder = cursor.fetchone()
+        
+        if not parent_folder:
+            cursor.close()
+            conn.close()
+            raise Exception(f"父目录 {parent_id} 不存在")
+            
+        if parent_folder["type"] != FileType.FOLDER.value:
+            cursor.close()
+            conn.close()
+            raise Exception(f"父目录 {parent_id} 不是文件夹类型")
+
+        # 检查同名文件夹是否已存在
+        cursor.execute(
+            "SELECT id FROM file WHERE parent_id = %s AND name = %s AND type = %s",
+            (parent_id, folder_name, FileType.FOLDER.value)
+        )
+        existing_folder = cursor.fetchone()
+        
+        if existing_folder:
+            cursor.close()
+            conn.close()
+            raise Exception(f"文件夹 '{folder_name}' 已存在")
+
+        # 创建文件夹记录
+        folder_id = get_uuid()
+        current_time = int(datetime.now().timestamp())
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        folder_record = {
+            "id": folder_id,
+            "parent_id": parent_id,
+            "tenant_id": user_id,
+            "created_by": user_id,
+            "name": folder_name,
+            "type": FileType.FOLDER.value,
+            "size": 0,
+            "location": "",
+            "source_type": FileSource.LOCAL.value,
+            "create_time": current_time,
+            "create_date": current_date,
+            "update_time": current_time,
+            "update_date": current_date,
+        }
+
+        # 插入文件夹记录
+        columns = ", ".join(folder_record.keys())
+        placeholders = ", ".join(["%s"] * len(folder_record))
+        query = f"INSERT INTO file ({columns}) VALUES ({placeholders})"
+        cursor.execute(query, list(folder_record.values()))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        logger.info(f"文件夹创建成功: {folder_id}")
+        
+        return {
+            "id": folder_id,
+            "name": folder_name,
+            "parent_id": parent_id,
+            "type": FileType.FOLDER.value,
+            "size": 0,
+            "create_time": current_time,
+            "create_date": current_date
+        }
+
+    except Exception as e:
+        logger.error(f"创建文件夹失败: {str(e)}")
+        raise e
+
+
+def get_folder_tree(parent_id=None, user_id=None):
+    """
+    获取文件夹树结构
+
+    Args:
+        parent_id: 父文件夹ID，如果为None则从根目录开始
+        user_id: 用户ID
+
+    Returns:
+        list: 文件夹树结构
+    """
+    try:
+        if user_id is None:
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor(dictionary=True)
+
+                # 查询创建时间最早的用户ID
+                query_earliest_user = """
+                SELECT id FROM user 
+                WHERE create_time = (SELECT MIN(create_time) FROM user)
+                LIMIT 1
+                """
+                cursor.execute(query_earliest_user)
+                earliest_user = cursor.fetchone()
+
+                if earliest_user:
+                    user_id = earliest_user["id"]
+                else:
+                    user_id = "system"
+
+                cursor.close()
+                conn.close()
+            except Exception as e:
+                user_id = "system"
+
+        # 如果没有指定parent_id，则获取根目录
+        if parent_id is None:
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            # 查询用户的根目录
+            query_root_folder = """
+            SELECT id FROM file 
+            WHERE tenant_id = %s AND parent_id = id AND type = 'folder'
+            LIMIT 1
+            """
+            cursor.execute(query_root_folder, (user_id,))
+            root_folder = cursor.fetchone()
+
+            if root_folder:
+                parent_id = root_folder["id"]
+            else:
+                cursor.close()
+                conn.close()
+                return []
+
+            cursor.close()
+            conn.close()
+
+        # 递归获取文件夹树
+        def get_children(folder_id):
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                """
+                SELECT id, name, parent_id, type, create_time, create_date
+                FROM file
+                WHERE parent_id = %s AND type = %s
+                ORDER BY name
+                """,
+                (folder_id, FileType.FOLDER.value)
+            )
+
+            folders = cursor.fetchall()
+            cursor.close()
+            conn.close()
+
+            for folder in folders:
+                if isinstance(folder.get("create_date"), datetime):
+                    folder["create_date"] = folder["create_date"].strftime("%Y-%m-%d %H:%M:%S")
+                folder["children"] = get_children(folder["id"])
+
+            return folders
+
+        return get_children(parent_id)
+
+    except Exception as e:
+        logger.error(f"获取文件夹树失败: {str(e)}")
+        raise e
+
+
 def upload_files_to_server(files, parent_id=None, user_id=None):
     """处理文件上传到服务器的核心逻辑"""
     logger.info(f"开始处理文件上传，文件数量: {len(files)}")
@@ -502,35 +805,84 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
             logger.error(f"查询最早用户ID失败: {str(e)}")
             user_id = "system"
 
-    # 如果没有指定parent_id，则获取file表中的第一个记录作为parent_id
+    # 如果没有指定parent_id，则获取或创建根目录
     if parent_id is None:
         try:
-            logger.info("未提供parent_id，尝试获取file表中的第一个记录")
+            logger.info("未提供parent_id，尝试获取或创建根目录")
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
 
-            # 查询file表中的第一个记录
-            query_first_file = """
+            # 查询用户的根目录（parent_id等于自身id的记录）
+            query_root_folder = """
             SELECT id FROM file 
+            WHERE tenant_id = %s AND parent_id = id AND type = 'folder'
             LIMIT 1
             """
-            cursor.execute(query_first_file)
-            first_file = cursor.fetchone()
+            cursor.execute(query_root_folder, (user_id,))
+            root_folder = cursor.fetchone()
 
-            if first_file:
-                parent_id = first_file["id"]
-                logger.info(f"使用file表中的第一个记录ID作为parent_id: {parent_id}")
+            if root_folder:
+                parent_id = root_folder["id"]
+                logger.info(f"使用现有根目录: {parent_id}")
             else:
-                # 如果没有找到记录，创建一个新的ID
+                # 创建根目录
                 parent_id = get_uuid()
-                logger.info(f"file表中没有记录，创建新的parent_id: {parent_id}")
+                current_time = int(datetime.now().timestamp())
+                current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                root_folder_record = {
+                    "id": parent_id,
+                    "parent_id": parent_id,  # 根目录的parent_id指向自己
+                    "tenant_id": user_id,
+                    "created_by": user_id,
+                    "name": "/",
+                    "type": FileType.FOLDER.value,
+                    "size": 0,
+                    "location": "",
+                    "source_type": FileSource.LOCAL.value,
+                    "create_time": current_time,
+                    "create_date": current_date,
+                    "update_time": current_time,
+                    "update_date": current_date,
+                }
+                
+                columns = ", ".join(root_folder_record.keys())
+                placeholders = ", ".join(["%s"] * len(root_folder_record))
+                query = f"INSERT INTO file ({columns}) VALUES ({placeholders})"
+                cursor.execute(query, list(root_folder_record.values()))
+                conn.commit()
+                logger.info(f"创建新根目录: {parent_id}")
 
             cursor.close()
             conn.close()
         except Exception as e:
-            logger.error(f"查询file表第一个记录失败: {str(e)}")
-            parent_id = get_uuid()  # 如果无法获取，生成一个新的ID
+            logger.error(f"获取或创建根目录失败: {str(e)}")
+            parent_id = get_uuid()
             logger.info(f"生成新的parent_id: {parent_id}")
+    else:
+        # 验证指定的parent_id是否存在且为文件夹类型
+        try:
+            logger.info(f"验证指定的parent_id: {parent_id}")
+            conn = get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute("SELECT id, type FROM file WHERE id = %s", (parent_id,))
+            parent_folder = cursor.fetchone()
+            
+            if not parent_folder:
+                logger.error(f"指定的parent_id {parent_id} 不存在")
+                raise Exception(f"指定的目录 {parent_id} 不存在")
+                
+            if parent_folder["type"] != FileType.FOLDER.value:
+                logger.error(f"指定的parent_id {parent_id} 不是文件夹类型")
+                raise Exception(f"指定的目录 {parent_id} 不是文件夹类型")
+                
+            logger.info(f"parent_id验证通过: {parent_id}")
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"验证parent_id失败: {str(e)}")
+            raise e
 
     results = []
 
